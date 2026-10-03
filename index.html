@@ -573,6 +573,7 @@ input { -webkit-user-select: text; user-select: text; }
 
 /* ----------------------------------------------------------- tutorial */
 .tut-layer { position: absolute; inset: 0; z-index: 30; }
+.tut-block { position: absolute; inset: 0; }
 .tut-dim { position: absolute; inset: 0; background: radial-gradient(circle at var(--x, 50%) var(--y, 50%), transparent 0, transparent var(--r, 120px), rgba(15, 25, 45, 0.5) calc(var(--r, 120px) + 40px)); transition: opacity 0.4s; opacity: 0; }
 .tut-dim.on { opacity: 1; }
 .spot { position: absolute; border-radius: 22px; box-shadow: 0 0 0 9999px rgba(15, 25, 45, 0.58); transition: all 0.5s var(--out); pointer-events: none; }
@@ -784,21 +785,23 @@ const TICK_RATE = 60;
 const DT = 1 / TICK_RATE;
 const MAX_FRAME_STEPS = 6;
 const MAX_SLOTS = 32;
+const GRID = 3;
+const U = (units) => units * GRID;
 const GAME = {
-  speed: 5.4,
-  // cells per second
+  speed: U(5.4),
+  // 5.4 units per second
   turnRate: 5.4,
-  // radians per second (turn radius ≈ 1 cell)
-  startRadius: 3.2,
-  // radius of spawn territory, in cells
+  // radians per second (turn radius ≈ 1 unit)
+  startRadius: U(3.2),
+  // radius of spawn territory
   bigStartShare: 0.01,
   // "Big Start" boost: start with 1% of the map
-  trailPointStep: 0.33,
+  trailPointStep: U(0.33),
   // polyline resolution of the rendered trail
-  selfGrace: 3,
+  selfGrace: U(3),
   // own trail cells this recent never kill you
-  headOnDist: 0.85,
-  // head to head collision distance, cells
+  headOnDist: U(0.85),
+  // head to head collision distance
   speedBoostMul: 2,
   // "Speed Rush" doubles the speed
   speedBoostTime: 6,
@@ -809,12 +812,14 @@ const GAME = {
   // seconds before a dead bot is replaced
   noRespawnAbove: 0.75,
   // stop replacing bots once the player owns this share
-  waveSpeed: 26
-  // cells per second for capture / transfer waves
+  waveSpeed: U(26),
+  // capture / transfer waves
+  rankedQuitPenalty: 100
+  // rank points lost for leaving a ranked match
 };
 const MAPS = {
-  normal: { size: 128, bots: 11 },
-  tutorial: { size: 64 }
+  normal: { size: U(128), bots: 11 },
+  tutorial: { size: U(64) }
 };
 const ECONOMY = {
   coinsPerPercent: 4,
@@ -1862,10 +1867,11 @@ RANKS.push({ key: "legend", division: 0, color: "#ff3d7f", dark: "#a0174a", ligh
 const LEGEND = RANKS.length - 1;
 function rankLevel(tier) {
   const x = clamp(tier / LEGEND, 0, 1);
-  return lerp(0.18, 1, x * (0.6 + 0.4 * x));
+  return lerp(0.62, 1.25, Math.pow(x, 0.9));
 }
+const rankBotSpeed = (tier) => 1 + 0.06 * clamp(tier / LEGEND, 0, 1);
 const rankBotCount = (tier) => Math.round(lerp(10, 15, clamp(tier / LEGEND, 0, 1)));
-const rankMapSize = (tier) => 112 + rankBotCount(tier) * 2;
+const rankMapSize = (tier) => (112 + rankBotCount(tier) * 2) * GRID;
 function computeRP({ place, players, share, seconds, tier, won = false }) {
   const placeTable = [32, 24, 18, 12, 8, 5, 3, 1];
   let rp = place <= placeTable.length ? placeTable[place - 1] : 0;
@@ -1946,6 +1952,7 @@ function defaultState() {
     chest: { nextAt: 0 },
     achievements: { done: [], claimed: [] },
     tutorialDone: false,
+    rankedActive: false,
     tutorialRewarded: false,
     settings: { music: 0.55, sfx: 0.8, muted: false, lang: "", quality: "high" }
   };
@@ -2302,6 +2309,7 @@ const STRINGS = {
     "death.wall": "You hit the wall",
     "death.head": "Head-on crash with {name}",
     "death.engulf": "{name} surrounded your land",
+    "death.quit": "You left the ranked match",
     "revive.title": "Continue?",
     "revive.text": "Watch a short ad and continue right where you fell. Your land stays yours.",
     "revive.button": "Continue",
@@ -2338,6 +2346,7 @@ const STRINGS = {
     "rank.dropped": "You dropped to {rank}",
     "rank.progress": "{rp} / {need} RP",
     "rank.legendRp": "{rp} RP",
+    "rank.abandoned": "You left a ranked match: −{n} RP",
     "rank.rules": "Ranked rules: kill a rival to take all of their land. Bots get smarter every rank. Coins ×0.5.",
     "rarity.common": "Common",
     "rarity.rare": "Rare",
@@ -2408,6 +2417,7 @@ const STRINGS = {
     "pause.title": "Paused",
     "pause.resume": "Resume",
     "pause.quit": "Leave match",
+    "pause.quitRanked": "Leave match (−{n} RP)",
     "tut.skip": "Skip tutorial",
     "tut.step": "Step {n}/{total}",
     "tut.move.title": "Steer your square",
@@ -2425,6 +2435,8 @@ const STRINGS = {
     "tut.menu.ranked": "Ranked: climb from Bronze to Legend. The winner takes the loser's land!",
     "tut.menu.pass": "Battle Pass: finish daily quests, earn XP and unlock exclusive rewards.",
     "tut.menu.reward": "Here are {n} coins for your first skin. Have fun!",
+    "tut.menu.done": "You're all set. Have fun!",
+    "tut.menu.go": "Let's go",
     "tut.dummy": "Dummy",
     // ------------------------------------------------------------ items
     "item.sky": "Sky",
@@ -4921,6 +4933,7 @@ function emitSkinFx(ps, skin, x, y, u, dt) {
   emitFx(ps, SKIN_FX[skin == null ? void 0 : skin.fx], x, y, u, dt, 1);
 }
 const POP = 0.38;
+const GAME_HEAD = GRID * 1.02;
 function contourPiece(path, xL, xR, yT, yB, tl, tr, br, bl) {
   let first = true;
   const pt = (x, y) => {
@@ -5003,7 +5016,7 @@ class Camera {
     this.shakeAmp = Math.max(this.shakeAmp, amount);
   }
   fit(vw, vh) {
-    this.cellPx = clamp(Math.sqrt(vw * vh) / 29, 15, 56);
+    this.cellPx = clamp(Math.sqrt(vw * vh) / 29, 15, 56) / GRID;
   }
 }
 class Renderer {
@@ -5066,10 +5079,11 @@ class Renderer {
     const offY = H2 / 2 - cam.y * s + cam.shakeY * this.dpr;
     const SX = (x) => Math.round(x * s + offX);
     const SY = (y) => Math.round(y * s + offY);
+    const us = s * GRID;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     const mx0 = SX(0), my0 = SY(0), mx1 = SX(grid.w), my1 = SY(grid.h);
     if (mx0 > 0 || my0 > 0 || mx1 < W || my1 < H2) {
-      ctx.fillStyle = this.hatchPattern(s);
+      ctx.fillStyle = this.hatchPattern(us);
       const tile = this.hatchTile;
       const ox = (offX % tile + tile) % tile, oy = (offY % tile + tile) % tile;
       ctx.save();
@@ -5077,7 +5091,7 @@ class Renderer {
       ctx.fillRect(-ox, -oy, W, H2);
       ctx.restore();
       ctx.fillStyle = "rgba(40,70,110,0.18)";
-      ctx.fillRect(mx0 - s * 0.15, my0 + s * 0.25, mx1 - mx0 + s * 0.3, my1 - my0 + s * 0.15);
+      ctx.fillRect(mx0 - us * 0.15, my0 + us * 0.25, mx1 - mx0 + us * 0.3, my1 - my0 + us * 0.15);
     }
     ctx.fillStyle = "#f4f8fb";
     ctx.fillRect(Math.max(0, mx0), Math.max(0, my0), Math.min(W, mx1) - Math.max(0, mx0), Math.min(H2, my1) - Math.max(0, my0));
@@ -5085,24 +5099,25 @@ class Renderer {
     const x1 = clamp(Math.ceil(cam.x + W / 2 / s) + 1, 0, grid.w - 1);
     const y0 = clamp(Math.floor(cam.y - H2 / 2 / s) - 2, 0, grid.h - 1);
     const y1 = clamp(Math.ceil(cam.y + H2 / 2 / s) + 1, 0, grid.h - 1);
-    if (s > 9) {
+    if (us > 9) {
       ctx.fillStyle = "#ebf1f6";
-      for (let y = y0; y <= y1; y++) {
-        const top = SY(y), bot = SY(y + 1);
-        for (let x = x0 + (x0 + y & 1); x <= x1; x += 2) ctx.fillRect(SX(x), top, SX(x + 1) - SX(x), bot - top);
+      const tx0 = Math.floor(x0 / GRID), tx1 = Math.ceil(x1 / GRID), ty0 = Math.floor(y0 / GRID), ty1 = Math.ceil(y1 / GRID);
+      for (let ty = ty0; ty <= ty1; ty++) {
+        const top = SY(ty * GRID), bot = SY((ty + 1) * GRID);
+        for (let tx = tx0 + (tx0 + ty & 1); tx <= tx1; tx += 2) ctx.fillRect(SX(tx * GRID), top, SX((tx + 1) * GRID) - SX(tx * GRID), bot - top);
       }
     }
     this.drawTerritory(ctx, grid, t2, x0, x1, y0, y1, s, offX, offY, pal);
     ctx.strokeStyle = "#9fb2c6";
-    ctx.lineWidth = Math.max(2, s * 0.14);
+    ctx.lineWidth = Math.max(2, us * 0.14);
     ctx.strokeRect(mx0, my0, mx1 - mx0, my1 - my0);
     ctx.strokeStyle = "rgba(255,90,80,0.35)";
-    ctx.lineWidth = Math.max(1, s * 0.06);
-    ctx.setLineDash([s * 0.5, s * 0.5]);
-    ctx.strokeRect(mx0 - s * 0.12, my0 - s * 0.12, mx1 - mx0 + s * 0.24, my1 - my0 + s * 0.24);
+    ctx.lineWidth = Math.max(1, us * 0.06);
+    ctx.setLineDash([us * 0.5, us * 0.5]);
+    ctx.strokeRect(mx0 - us * 0.12, my0 - us * 0.12, mx1 - mx0 + us * 0.24, my1 - my0 + us * 0.24);
     ctx.setLineDash([]);
     const visible = [];
-    const margin = 3;
+    const margin = 3 * GRID;
     for (const p of world.players) {
       if (!p.alive) continue;
       const ix = p.px + (p.x - p.px) * alpha, iy = p.py + (p.y - p.py) * alpha;
@@ -5115,11 +5130,11 @@ class Renderer {
     }
     if (frameDt > 0) {
       for (const p of visible) {
-        if (p.trailPts.length >= 2) emitTrailFx(this.particles, p.look.trail, p.rx, p.ry, 1, frameDt);
-        emitSkinFx(this.particles, p.look.skin, p.rx, p.ry, 1, frameDt);
+        if (p.trailPts.length >= 2) emitTrailFx(this.particles, p.look.trail, p.rx, p.ry, GRID, frameDt);
+        emitSkinFx(this.particles, p.look.skin, p.rx, p.ry, GRID, frameDt);
         if (p.speedMul > 1 && this.particles.chance(30, frameDt)) {
           const a = p.angle + Math.PI + (Math.random() - 0.5) * 0.8;
-          this.particles.spawn(p.rx, p.ry, Math.cos(a) * 6, Math.sin(a) * 6, 0.3, 0.12, "#ffffff", "spark", 0, 0.9);
+          this.particles.spawn(p.rx, p.ry, Math.cos(a) * 6 * GRID, Math.sin(a) * 6 * GRID, 0.3, 0.12 * GRID, "#ffffff", "spark", 0, 0.9);
         }
       }
     }
@@ -5127,13 +5142,13 @@ class Renderer {
     for (const p of visible) this.drawPlayer(ctx, p, s, offX, offY, t2);
     this.particles.draw(ctx, s, 0, 0, offX, offY, { w: W, h: H2 });
     this.drawFloaters(ctx, frameDt, s, offX, offY);
-    const fs = Math.round(clamp(s * 0.42, 11 * this.dpr, 19 * this.dpr));
+    const fs = Math.round(clamp(us * 0.42, 11 * this.dpr, 19 * this.dpr));
     ctx.font = `600 ${fs}px Rubik, system-ui, sans-serif`;
     ctx.textAlign = "center";
     ctx.textBaseline = "bottom";
     ctx.lineJoin = "round";
     for (const p of visible) {
-      const X = p.rx * s + offX, Y = p.ry * s + offY - s * (p.look.hat.id !== "none" ? 1.15 : 0.78);
+      const X = p.rx * s + offX, Y = p.ry * s + offY - us * (p.look.hat.id !== "none" ? 1.15 : 0.78);
       ctx.lineWidth = fs * 0.28;
       ctx.strokeStyle = "rgba(20,32,56,0.55)";
       ctx.strokeText(p.name, X, Y);
@@ -5170,8 +5185,9 @@ class Renderer {
    * contoured with marching squares at 0.5. Straight edges land exactly on cell
    * borders, staircases become clean diagonals, and a capture "flows" in
    * instead of popping square by square. One Path2D per owner, filled in one
-   * call, so pieces never show seams. No blur and no outward stroke: what you
-   * see as your land is your land.
+   * call, so pieces never show seams. Only a light symmetric smoothing on the
+   * fine grid and no outward stroke: the drawn edge stays within a fraction
+   * of a cell of the real one.
    */
   drawTerritory(ctx, grid, t2, x0, x1, y0, y1, s, offX, offY, pal) {
     const { owner, fxAt, fxPrev, w: gw, h: gh } = grid;
@@ -5186,12 +5202,13 @@ class Renderer {
         ownB: new Uint8Array(m),
         valB: new Float32Array(m),
         f: new Float32Array(m),
+        g: new Float32Array(m),
         sx: new Float32Array(W * 2),
         sy: new Float32Array(H2 * 2),
         present: new Uint8Array(MAX_SLOTS + 1)
       };
     }
-    const { ownA, valA, ownB, valB, f, sx, sy, present } = b;
+    const { ownA, valA, ownB, valB, f, g, sx, sy, present } = b;
     present.fill(0);
     for (let cy = 0; cy < H2; cy++) {
       const y = gy0 + cy;
@@ -5235,7 +5252,18 @@ class Renderer {
     paths.length = 0;
     for (let o = 1; o <= MAX_SLOTS; o++) {
       if (!present[o] || !pal[o]) continue;
-      for (let c = 0; c < n; c++) f[c] = (ownA[c] === o ? valA[c] : 0) + (ownB[c] === o ? valB[c] : 0);
+      for (let c = 0; c < n; c++) g[c] = (ownA[c] === o ? valA[c] : 0) + (ownB[c] === o ? valB[c] : 0);
+      for (let cy = 0; cy < H2; cy++) {
+        for (let cx = 0; cx < W; cx++) {
+          const c = cy * W + cx, raw = g[c];
+          if (cx === 0 || cy === 0 || cx === W - 1 || cy === H2 - 1) {
+            f[c] = raw;
+            continue;
+          }
+          const v = (4 * raw + 2 * (g[c - 1] + g[c + 1] + g[c - W] + g[c + W]) + g[c - W - 1] + g[c - W + 1] + g[c + W - 1] + g[c + W + 1]) / 16;
+          f[c] = v > raw * 0.62 ? v : raw * 0.62;
+        }
+      }
       const path = new Path2D();
       for (let cy = 0; cy < H2 - 1; cy++) {
         const yT = sy[cy], yB = sy[cy + 1];
@@ -5259,7 +5287,7 @@ class Renderer {
       }
       paths.push(o, path);
     }
-    const depth = Math.max(2, s * 0.18);
+    const depth = Math.max(2, s * GRID * 0.18);
     ctx.lineJoin = "miter";
     ctx.lineWidth = Math.min(1.5, Math.max(1, s * 0.03));
     for (let k = 0; k < paths.length; k += 2) {
@@ -5291,11 +5319,11 @@ class Renderer {
     buf[src.length] = ix * s + offX;
     buf[src.length + 1] = iy * s + offY;
     const color = skinPalette(p.look.skin).trail;
-    drawTrail(ctx, p.look.trail, buf, n, s * 0.46, color, t2, p.id * 977);
+    drawTrail(ctx, p.look.trail, buf, n, s * GRID * 0.46, color, t2, p.id * 977);
   }
   drawPlayer(ctx, p, s, offX, offY, t2) {
     const X = p.rx * s + offX, Y = p.ry * s + offY;
-    const size = s * 1.02;
+    const size = s * GAME_HEAD;
     let alpha = 1;
     if (p.invuln > 0 && p.invuln < 30) alpha = 0.45 + 0.35 * Math.sin(t2 * 22);
     const lowQ = this.quality === "low";
@@ -5328,9 +5356,9 @@ class Renderer {
         continue;
       }
       const p = f.t / f.life;
-      const X = f.x * s + offX, Y = (f.y - ease.outCubic(p) * 1.6) * s + offY;
+      const X = f.x * s + offX, Y = (f.y - ease.outCubic(p) * 1.6 * GRID) * s + offY;
       const pop = p < 0.15 ? ease.outBack(p / 0.15) : 1;
-      const fs = Math.round(clamp(s * 0.62 * f.size, 13 * this.dpr, 30 * this.dpr) * pop);
+      const fs = Math.round(clamp(s * GRID * 0.62 * f.size, 13 * this.dpr, 30 * this.dpr) * pop);
       ctx.globalAlpha = p > 0.7 ? 1 - (p - 0.7) / 0.3 : 1;
       ctx.font = `800 ${fs}px Rubik, system-ui, sans-serif`;
       ctx.textAlign = "center";
@@ -5546,7 +5574,7 @@ class BotController {
     this.decideIn = rng.float(0, profile.reaction);
     this.blindT = 0;
     this.noiseVal = 0;
-    this.trailLimit = 40;
+    this.trailLimit = 40 * GRID;
     this.near = [];
     this.forceHunt = null;
   }
@@ -5601,7 +5629,7 @@ class BotController {
       if (!this.wps.length) mustReturn = true;
       else if (!mustReturn) {
         const prey = this.findPrey(world, me);
-        if (prey && prey.dist <= 4 && rng.chance(prof.aggression)) {
+        if (prey && prey.dist <= 4 * GRID && rng.chance(prof.aggression)) {
           this.state = "hunt";
           this.prey = prey;
           return;
@@ -5623,7 +5651,7 @@ class BotController {
       g.idx(me.cx, me.cy),
       (i) => g.owner[i] === id,
       (i) => g.trail[i] !== id || g.trailSeq[i] > grace,
-      9e3
+      9e3 * GRID * GRID
     );
   }
   setReturnGoal(world, me, path) {
@@ -5632,7 +5660,7 @@ class BotController {
       return;
     }
     const g = world.grid;
-    let k = Math.min(4, path.length - 1);
+    let k = Math.min(4 * GRID, path.length - 1);
     for (; k > 1; k--) {
       const c2 = path[k];
       if (this.clearLine(world, me, c2 % g.w + 0.5, (c2 / g.w | 0) + 0.5)) break;
@@ -5691,10 +5719,10 @@ class BotController {
       const s = e.trail[0];
       const eRet = Math.hypot(e.x - (s % g.w + 0.5), e.y - ((s / g.w | 0) + 0.5));
       const ratio = me.speed * me.speedMul / (e.speed * e.speedMul);
-      const feasible = info.defend || info.dist / ratio < eRet + 2 + prof.aggression * 4;
+      const feasible = info.defend || info.dist / ratio < eRet + (2 + prof.aggression * 4) * GRID;
       if (!feasible) continue;
-      const value = (e.isHuman ? 1 + prof.playerBias * 2 : 1) * (1 + e.trail.length / 25) * (info.defend ? 2.5 : 1);
-      const score = value / (info.dist + 2);
+      const value = (e.isHuman ? 1 + prof.playerBias * 2 : 1) * (1 + e.trail.length / (25 * GRID)) * (info.defend ? 2.5 : 1);
+      const score = value / (info.dist + 2 * GRID);
       if (score > bestScore) {
         bestScore = score;
         best = info;
@@ -5711,7 +5739,7 @@ class BotController {
         dist = d;
         cell = c;
       }
-      if (g.owner[c] === me.id && d < 14) defend = true;
+      if (g.owner[c] === me.id && d < 14 * GRID) defend = true;
     }
     return { player: e, cell, dist, defend: defend || forced };
   }
@@ -5739,7 +5767,7 @@ class BotController {
     for (const e of world.players) {
       if (e !== me && e.alive) nearEnemy = Math.min(nearEnemy, Math.hypot(e.x - me.x, e.y - me.y));
     }
-    const safety = clamp(nearEnemy / 18, 0.45, 1);
+    const safety = clamp(nearEnemy / (18 * GRID), 0.45, 1);
     const share = g.counts[me.id] / g.n;
     const sizeBoost = 1 + Math.min(0.6, share * 4);
     let best = null, bestScore = -Infinity;
@@ -5751,14 +5779,14 @@ class BotController {
       const cand = this.makeLoop(world, me, ex.x, ex.y, th, safety * sizeBoost);
       if (!cand) continue;
       const turn = Math.abs(angleDiff(me.angle, th));
-      const score = cand.value / (cand.len + ex.d * 0.6 + 4) - turn * 0.25 + rng.float(0, 0.35);
+      const score = cand.value / ((cand.len + ex.d * 0.6) / GRID + 4) - turn * 0.25 + rng.float(0, 0.35);
       if (score > bestScore) {
         bestScore = score;
         best = cand;
       }
     }
     if (!best) {
-      const path = bfs(g, g.idx(me.cx, me.cy), (i) => g.owner[i] !== me.id, () => true, 3e4);
+      const path = bfs(g, g.idx(me.cx, me.cy), (i) => g.owner[i] !== me.id, () => true, 3e4 * GRID * GRID);
       if (path) {
         const c = path[path.length - 1];
         const x = c % g.w + 0.5, y = (c / g.w | 0) + 0.5;
@@ -5767,14 +5795,14 @@ class BotController {
       }
     }
     this.wps = best ? best.wps : [];
-    const len = best ? best.len : 20;
-    this.trailLimit = Math.round(len * 1.9 + 10);
+    const len = best ? best.len : 20 * GRID;
+    this.trailLimit = Math.round(len * 1.9 + 10 * GRID);
   }
   exitAlong(world, me, th) {
     const g = world.grid;
     const dx = Math.cos(th) * 0.5, dy = Math.sin(th) * 0.5;
     let x = me.x, y = me.y;
-    for (let d = 0; d < 34; d += 0.5) {
+    for (let d = 0; d < 34 * GRID; d += 0.5) {
       const cx = Math.floor(x), cy = Math.floor(y);
       if (!g.inside(cx, cy)) return null;
       if (g.owner[g.idx(cx, cy)] !== me.id) return { x, y, d };
@@ -5788,10 +5816,11 @@ class BotController {
     const prof = this.prof;
     const size = world.size;
     const dx = Math.cos(th), dy = Math.sin(th);
-    let L = rng.float(4, 9) * prof.loopScale * scale;
-    let W = rng.float(3, 8) * prof.loopScale * scale;
+    let L = rng.float(4, 9) * GRID * prof.loopScale * scale;
+    let W = rng.float(3, 8) * GRID * prof.loopScale * scale;
     const sides = rng.chance(0.5) ? [1, -1] : [-1, 1];
-    const ok = (x, y) => x > 2.5 && y > 2.5 && x < size - 2.5 && y < size - 2.5;
+    const m = 2.5 * GRID;
+    const ok = (x, y) => x > m && y > m && x < size - m && y < size - m;
     for (let attempt = 0; attempt < 3; attempt++) {
       for (const s of sides) {
         const px = -dy * s, py = dx * s;
@@ -5800,8 +5829,8 @@ class BotController {
         if (!ok(ex, ey) || !ok(w1.x, w1.y) || !ok(w2.x, w2.y)) continue;
         const g = world.grid;
         let value = 0;
-        for (let u = 0.5; u < L; u += 1.5) {
-          for (let v = 0.5; v < W; v += 1.5) {
+        for (let u = 0.5 * GRID; u < L; u += 1.5 * GRID) {
+          for (let v = 0.5 * GRID; v < W; v += 1.5 * GRID) {
             const cx = Math.floor(ex + dx * u + px * v), cy = Math.floor(ey + dy * u + py * v);
             if (!g.inside(cx, cy)) continue;
             const o = g.owner[g.idx(cx, cy)];
@@ -5813,7 +5842,7 @@ class BotController {
         for (const e of world.players) {
           if (e === me || !e.alive) continue;
           const d = Math.min(Math.hypot(e.x - w1.x, e.y - w1.y), Math.hypot(e.x - w2.x, e.y - w2.y));
-          if (d < 8) value -= (8 - d) * 3;
+          if (d < 8 * GRID) value -= (8 * GRID - d) / GRID * 3;
         }
         return { wps: [w1, w2], len: 2 * (L + W), value };
       }
@@ -5836,7 +5865,7 @@ class BotController {
       } else return me.angle;
     } else if (this.wps.length) {
       const wp = this.wps[0];
-      if (Math.hypot(wp.x - me.x, wp.y - me.y) < 1.3) {
+      if (Math.hypot(wp.x - me.x, wp.y - me.y) < 1.3 * GRID) {
         this.wps.shift();
         if (!this.wps.length && me.trail.length) {
           this.state = "return";
@@ -5849,7 +5878,7 @@ class BotController {
     } else {
       return me.angle;
     }
-    if (this.state === "return" && this.goal && Math.hypot(tx - me.x, ty - me.y) < 0.6) this.decideIn = 0;
+    if (this.state === "return" && this.goal && Math.hypot(tx - me.x, ty - me.y) < 0.6 * GRID) this.decideIn = 0;
     return Math.atan2(ty - me.y, tx - me.x) + this.noiseVal;
   }
   avoid(world, me, want) {
@@ -5857,7 +5886,7 @@ class BotController {
     near.length = 0;
     if (me.trail.length) {
       for (const e of world.players) {
-        if (e !== me && e.alive && Math.abs(e.x - me.x) < 7 && Math.abs(e.y - me.y) < 7) near.push(e);
+        if (e !== me && e.alive && Math.abs(e.x - me.x) < 7 * GRID && Math.abs(e.y - me.y) < 7 * GRID) near.push(e);
       }
     }
     const t0 = this.ttc(world, me, want);
@@ -5879,9 +5908,9 @@ class BotController {
   /** Time until the simulated arc towards angle `a` hits something (Infinity = clear). */
   ttc(world, me, a) {
     const g = world.grid;
-    const step = 0.05;
-    const T2 = this.prof.lookahead;
     const sp = me.speed * me.speedMul;
+    const step = Math.min(0.05, 0.45 / sp);
+    const T2 = this.prof.lookahead;
     const maxTurn = GAME.turnRate * step;
     const size = world.size;
     const grace = me.trail.length - 1 - GAME.selfGrace - 1;
@@ -5890,14 +5919,15 @@ class BotController {
       ang += clamp(angleDiff(ang, a), -maxTurn, maxTurn);
       x += Math.cos(ang) * sp * step;
       y += Math.sin(ang) * sp * step;
-      if (x < 0.7 || y < 0.7 || x > size - 0.7 || y > size - 0.7) return t2;
+      const wm = 0.7 * GRID;
+      if (x < wm || y < wm || x > size - wm || y > size - wm) return t2;
       for (let c = 0; c < 4; c++) {
         const i = g.idx(Math.floor(x + (c & 1 ? 0.32 : -0.32)), Math.floor(y + (c & 2 ? 0.32 : -0.32)));
         if (g.trail[i] === me.id && g.trailSeq[i] <= grace && g.owner[i] !== me.id) return t2;
       }
       for (const e of this.near) {
         const ddx = e.x - x, ddy = e.y - y;
-        if (ddx * ddx + ddy * ddy < 1.6) return t2;
+        if (ddx * ddx + ddy * ddy < 1.6 * GRID * GRID) return t2;
       }
     }
     return Infinity;
@@ -5906,24 +5936,26 @@ class BotController {
 const PERSONALITIES = ["balanced", "cautious", "aggressive", "greedy"];
 function botProfile(level, personality = "balanced") {
   const L = clamp(level, 0, 1);
+  const E = clamp((level - 1) / 0.25, 0, 1);
   const p = {
-    level: L,
+    level: clamp(level, 0, 1.25),
     personality,
-    reaction: lerp(0.3, 0.07, L),
+    reaction: lerp(lerp(0.3, 0.07, L), 0.045, E),
     // seconds between decisions
-    lookahead: lerp(0.42, 0.85, L),
+    lookahead: lerp(lerp(0.42, 0.85, L), 0.95, E),
     // seconds of path checked for obstacles
     mistakeRate: L > 0.7 ? 0 : lerp(0.09, 0, L / 0.7),
     // chance/s of a blind moment
-    aggression: lerp(0.15, 0.75, L),
+    aggression: lerp(lerp(0.15, 0.75, L), 0.92, E),
     // probability of choosing to hunt
-    caution: lerp(-1.5, 3.5, L),
-    // safety margin in cells when racing home
-    loopScale: lerp(0.8, 1.2, L),
-    huntRange: lerp(7, 22, L),
-    playerBias: lerp(0.1, 0.85, L),
+    caution: lerp(lerp(-1.5, 3.5, L), 4, E),
+    // safety margin (units) when racing home
+    loopScale: lerp(lerp(0.8, 1.2, L), 1.3, E),
+    huntRange: lerp(lerp(7, 22, L), 30, E),
+    // units
+    playerBias: lerp(lerp(0.1, 0.85, L), 1.2, E),
     // preference for hunting the human
-    noise: lerp(0.24, 0.02, L)
+    noise: lerp(lerp(0.24, 0.02, L), 0.01, E)
     // steering inaccuracy, radians
   };
   switch (personality) {
@@ -5943,6 +5975,8 @@ function botProfile(level, personality = "balanced") {
       p.aggression *= 0.8;
       break;
   }
+  p.caution *= GRID;
+  p.huntRange *= GRID;
   return p;
 }
 function normalLevel(rng) {
@@ -6285,7 +6319,7 @@ class World extends Emitter {
   spawnCost(x, y, r) {
     const g = this.grid;
     let cost = 0;
-    const R = Math.ceil(r + 3);
+    const R = Math.ceil(r + 3 * GRID);
     for (let dy = -R; dy <= R; dy++) {
       for (let dx = -R; dx <= R; dx++) {
         const cx = Math.floor(x) + dx, cy = Math.floor(y) + dy;
@@ -6301,12 +6335,12 @@ class World extends Emitter {
     for (const p of this.players) {
       if (!p.alive) continue;
       const d = Math.hypot(p.x - x, p.y - y);
-      if (d < 14) cost += (14 - d) * 12;
+      if (d < 14 * GRID) cost += (14 * GRID - d) * 12;
     }
     return cost;
   }
   findSpawnPoint(r) {
-    const margin = r + 4;
+    const margin = r + 4 * GRID;
     let best = null, bestCost = Infinity;
     for (let k = 0; k < 70; k++) {
       const x = this.rng.float(margin, this.size - margin);
@@ -6350,9 +6384,9 @@ class World extends Emitter {
   }
   /** "Continue" after a death: put the player back where they died. */
   revive(p) {
-    const r = 2.2;
-    const x = clamp(p.x, r + 2, this.size - r - 2);
-    const y = clamp(p.y, r + 2, this.size - r - 2);
+    const r = 2.2 * GRID;
+    const x = clamp(p.x, r + 2 * GRID, this.size - r - 2 * GRID);
+    const y = clamp(p.y, r + 2 * GRID, this.size - r - 2 * GRID);
     p.pendingDeath = null;
     p.deferDeath = false;
     const keepAngle = p.angle;
@@ -6504,14 +6538,15 @@ class World extends Emitter {
     p.cy = clamp(Math.floor(p.y), 0, this.size - 1);
   }
   bounce(p) {
-    const nearX = p.x < 1.5 || p.x > this.size - 1.5;
-    const nearY = p.y < 1.5 || p.y > this.size - 1.5;
+    const m = 1.5 * GRID;
+    const nearX = p.x < m || p.x > this.size - m;
+    const nearY = p.y < m || p.y > this.size - m;
     if (nearX) p.angle = Math.PI - p.angle;
     if (nearY) p.angle = -p.angle;
     if (!nearX && !nearY) p.angle += Math.PI;
     p.targetAngle = p.angle;
-    p.x = clamp(p.x, 1, this.size - 1);
-    p.y = clamp(p.y, 1, this.size - 1);
+    p.x = clamp(p.x, GRID, this.size - GRID);
+    p.y = clamp(p.y, GRID, this.size - GRID);
     p.cx = Math.floor(p.x);
     p.cy = Math.floor(p.y);
   }
@@ -6683,7 +6718,7 @@ class Match extends Emitter {
       bots = 0;
       level = 0;
     } else if (mode === "demo") {
-      size = 96;
+      size = 96 * GRID;
       bots = 9;
       level = 0.35;
     } else {
@@ -6696,7 +6731,7 @@ class Match extends Emitter {
     this.world = new World({ size, transferOnKill: this.ranked });
     if (mode !== "demo") {
       const radius = boosts.bigStart ? Math.sqrt(GAME.bigStartShare * size * size / Math.PI) : GAME.startRadius;
-      const spawn = mode === "tutorial" ? { x: size / 2, y: size / 2, radius: 3.2, angle: 0 } : { x: size / 2 + this.rng.float(-size * 0.2, size * 0.2), y: size / 2 + this.rng.float(-size * 0.2, size * 0.2), radius };
+      const spawn = mode === "tutorial" ? { x: size / 2, y: size / 2, radius: 3.2 * GRID, angle: 0 } : { x: size / 2 + this.rng.float(-size * 0.2, size * 0.2), y: size / 2 + this.rng.float(-size * 0.2, size * 0.2), radius };
       this.human = this.world.addPlayer({ name: nickname || "You", isHuman: true, look: resolveLook(look), controller: new HumanController(this) }, spawn);
       this.human.deferDeath = true;
       if (boosts.shield) this.human.shield = 1;
@@ -6739,7 +6774,7 @@ class Match extends Emitter {
     var _a;
     const level = (_a = this.level) != null ? _a : normalLevel(this.rng);
     const personality = this.rng.pick(PERSONALITIES);
-    const profile = botProfile(clamp(level + this.rng.float(-0.06, 0.06), 0, 1), personality);
+    const profile = botProfile(clamp(level + this.rng.float(-0.06, 0.06), 0, 1.25), personality);
     const name = pickName(this.rng, this.usedNames);
     this.usedNames.add(name);
     const bot = this.world.addPlayer({
@@ -6747,7 +6782,10 @@ class Match extends Emitter {
       look: this.randomLook(),
       controller: new BotController(profile, new Rng(this.rng.int(1, 2 ** 30)))
     }, spawnOpts);
-    if (bot) bot.personality = personality;
+    if (bot) {
+      bot.personality = personality;
+      if (this.ranked) bot.speed *= rankBotSpeed(this.tier);
+    }
     return bot;
   }
   // ---------------------------------------------------------------- events
@@ -6764,8 +6802,8 @@ class Match extends Emitter {
       if (!player.isHuman) return;
       const pct = cells.length / w.grid.n * 100;
       (_a = this.audio) == null ? void 0 : _a.play("capture", { size: cells.length });
-      if (pct >= 0.05) this.renderer.floatText(player.x, player.y - 0.6, `+${pct.toFixed(pct < 1 ? 2 : 1)}%`, "#ffffff", pct > 2 ? 1.25 : 1);
-      ps.burst(player.x, player.y, skinPalette(player.look.skin).land, 10 + Math.min(30, cells.length / 6), 1, 5);
+      if (pct >= 0.05) this.renderer.floatText(player.x, player.y - 0.6 * GRID, `+${pct.toFixed(pct < 1 ? 2 : 1)}%`, "#ffffff", pct > 2 ? 1.25 : 1);
+      ps.burst(player.x, player.y, skinPalette(player.look.skin).land, 10 + Math.min(30, cells.length / (6 * GRID * GRID)), GRID, 5);
       this.emit("humanCapture", { cells: cells.length, pct });
     });
     w.on("death", ({ victim, killer, cause }) => {
@@ -6773,8 +6811,8 @@ class Match extends Emitter {
       const pal = skinPalette(victim.look.skin);
       const visible = this.isVisible(victim.x, victim.y);
       if (visible) {
-        ps.burst(victim.x, victim.y, pal.mid, 26, 1, 8);
-        ps.burst(victim.x, victim.y, "#ffffff", 10, 1, 5, "circle");
+        ps.burst(victim.x, victim.y, pal.mid, 26, GRID, 8);
+        ps.burst(victim.x, victim.y, "#ffffff", 10, GRID, 5, "circle");
       }
       if (victim === this.human) {
         this.onHumanDeath(killer, cause);
@@ -6785,7 +6823,7 @@ class Match extends Emitter {
         (_a = this.audio) == null ? void 0 : _a.play("kill");
         this.renderer.camera.shake(7);
         const coins = Math.round(ECONOMY.coinsPerKill * (this.ranked ? ECONOMY.rankedMultiplier : 1) * (this.boosts.magnet ? ECONOMY.magnetMultiplier : 1));
-        this.renderer.floatText(victim.x, victim.y - 0.5, `+${coins}`, "#ffd23f", 1.3, true);
+        this.renderer.floatText(victim.x, victim.y - 0.5 * GRID, `+${coins}`, "#ffd23f", 1.3, true);
         this.emit("feed", { kind: "kill", name: victim.name });
         this.onHumanKill(victim);
       } else if (visible) {
@@ -6804,7 +6842,7 @@ class Match extends Emitter {
       if (player !== this.human) return;
       (_a = this.audio) == null ? void 0 : _a.play("shield");
       this.renderer.camera.shake(5);
-      ps.burst(player.x, player.y, "#8fe3ff", 24, 1, 6, "circle");
+      ps.burst(player.x, player.y, "#8fe3ff", 24, GRID, 6, "circle");
       this.emit("feed", { kind: "shield" });
     });
   }
@@ -6874,7 +6912,7 @@ class Match extends Emitter {
     this.place = this.world.placeOf(h2);
     (_b = this.audio) == null ? void 0 : _b.play("death");
     this.renderer.camera.shake(16);
-    this.renderer.particles.burst(h2.x, h2.y, skinPalette(h2.look.skin).mid, 40, 1, 10);
+    this.renderer.particles.burst(h2.x, h2.y, skinPalette(h2.look.skin).mid, 40, GRID, 10);
     (_c = this.input) == null ? void 0 : _c.reset();
     if (this.mode === "tutorial") return;
     if (this.canRevive()) this.emit("offerRevive", this.deathInfo);
@@ -6890,7 +6928,7 @@ class Match extends Emitter {
     this.human.deferDeath = true;
     this.state = "playing";
     this.aliveSince = this.world.time;
-    this.renderer.particles.burst(this.human.x, this.human.y, "#ffffff", 30, 1, 6, "circle");
+    this.renderer.particles.burst(this.human.x, this.human.y, "#ffffff", 30, GRID, 6, "circle");
     this.emit("revived");
   }
   finishDeath() {
@@ -8481,7 +8519,7 @@ function resultsDialog(app2, data) {
   const { result, coins } = data;
   return app2.modals.show((close) => {
     const title = h(`h2.res-title${result.won ? ".win" : ""}`, { text: result.won ? t("results.victory") : t("results.over") });
-    const reason = result.won ? "" : t(`death.${result.cause || "cut"}`, { name: result.killerName || "?" });
+    const reason = result.won || !result.cause ? "" : t(`death.${result.cause}`, { name: result.killerName || "?" });
     const stat = (ic, label, cls = "") => {
       const b = h("b", { text: "0" });
       const el = h(`div.stat${cls}`, {}, h("span", { html: icon(ic) }), b, h("small", { text: label }));
@@ -8736,7 +8774,8 @@ function settingsDialog(app2) {
         h("div.set-row", {}, h("label", { html: `${icon("sparkle")}${t("settings.graphics")}` }), gfx),
         h("div.set-row", {}, h("label", { html: `${icon("keyboard")}${t("settings.controls")}` })),
         h("div.set-note", { text: t("settings.controlsText") }),
-        h("button.btn.ghost", { html: `${icon("flag")}${t("settings.tutorial")}`, on: { click: () => {
+        // replaying the tutorial would abandon a running match, so only offer it from the menu
+        app2.match ? null : h("button.btn.ghost", { html: `${icon("flag")}${t("settings.tutorial")}`, on: { click: () => {
           app2.sfx("click");
           close();
           app2.startTutorial();
@@ -8748,27 +8787,30 @@ function settingsDialog(app2) {
 }
 function pauseDialog(app2) {
   return app2.modals.show(
-    (close) => h(
-      "div",
-      {},
-      h("h2", { text: t("pause.title") }),
-      h(
-        "div.actions",
+    (close) => {
+      var _a;
+      return h(
+        "div",
         {},
-        h("button.btn.green.big", { html: `${icon("play")}${t("pause.resume")}`, on: { click: () => {
-          app2.sfx("click");
-          close("resume");
-        } } }),
-        h("button.btn.ghost", { html: `${icon("gear")}${t("menu.settings")}`, on: { click: () => {
-          app2.sfx("click");
-          close("settings");
-        } } }),
-        h("button.btn.red", { html: `${icon("back")}${t("pause.quit")}`, on: { click: () => {
-          app2.sfx("click");
-          close("quit");
-        } } })
-      )
-    ),
+        h("h2", { text: t("pause.title") }),
+        h(
+          "div.actions",
+          {},
+          h("button.btn.green.big", { html: `${icon("play")}${t("pause.resume")}`, on: { click: () => {
+            app2.sfx("click");
+            close("resume");
+          } } }),
+          h("button.btn.ghost", { html: `${icon("gear")}${t("menu.settings")}`, on: { click: () => {
+            app2.sfx("click");
+            close("settings");
+          } } }),
+          h("button.btn.red", { html: `${icon("back")}${((_a = app2.match) == null ? void 0 : _a.ranked) ? t("pause.quitRanked", { n: GAME.rankedQuitPenalty }) : t("pause.quit")}`, on: { click: () => {
+            app2.sfx("click");
+            close("quit");
+          } } })
+        )
+      );
+    },
     { dismissible: true }
   );
 }
@@ -8923,16 +8965,21 @@ class ScriptedController {
   constructor(wps = [], { next } = {}) {
     this.wps = wps;
     this.next = next;
+    this.retry = 0;
   }
   update(world, p, dt) {
     if (p.frozen) return;
-    if (!this.wps.length && this.next) this.wps = this.next(world, p) || [];
+    this.retry -= dt;
+    if (!this.wps.length && this.next && this.retry <= 0) {
+      this.wps = this.next(world, p) || [];
+      if (!this.wps.length) this.retry = 0.5;
+    }
     const wp = this.wps[0];
     if (!wp) {
       p.targetAngle = p.angle + dt * 2.2;
       return;
     }
-    if (Math.hypot(wp.x - p.x, wp.y - p.y) < 0.9) {
+    if (Math.hypot(wp.x - p.x, wp.y - p.y) < 0.9 * GRID) {
       this.wps.shift();
       return;
     }
@@ -8947,8 +8994,9 @@ function segmentClear(world, a, b, id) {
   }
   return true;
 }
-function loopBeside(world, p, target, out = 7, side = 5) {
-  const clampPt = (x, y) => ({ x: Math.max(2.5, Math.min(world.size - 2.5, x)), y: Math.max(2.5, Math.min(world.size - 2.5, y)) });
+function loopBeside(world, p, target, out = 7 * GRID, side = 5 * GRID) {
+  const m = 2.5 * GRID;
+  const clampPt = (x, y) => ({ x: Math.max(m, Math.min(world.size - m, x)), y: Math.max(m, Math.min(world.size - m, y)) });
   const vx0 = target.x - p.x, vy0 = target.y - p.y;
   const vl = Math.hypot(vx0, vy0) || 1;
   const vx = vx0 / vl, vy = vy0 / vl;
@@ -8956,7 +9004,7 @@ function loopBeside(world, p, target, out = 7, side = 5) {
     for (const sgn of [1, -1]) {
       const tx = -vy * sgn, ty = vx * sgn;
       let ex = p.x, ey = p.y;
-      for (let d = 0; d < 20 && world.ownerAt(ex, ey) === p.id; d += 0.5) {
+      for (let d = 0; d < 20 * GRID && world.ownerAt(ex, ey) === p.id; d += 0.5) {
         ex += tx * 0.5;
         ey += ty * 0.5;
       }
@@ -9098,12 +9146,13 @@ class Tutorial {
   freeSpot(px, py, avoid = []) {
     const w = this.match.world, g = w.grid, size = w.size, me = this.human;
     const clear = (x, y) => {
-      if (x < 6 || y < 6 || x > size - 6 || y > size - 6) return false;
-      if (Math.hypot(x - me.x, y - me.y) < 7) return false;
-      for (const a of avoid) if (Math.hypot(x - a.x, y - a.y) < 7) return false;
-      for (let dy = -5; dy <= 5; dy++) {
-        for (let dx = -5; dx <= 5; dx++) {
-          if (dx * dx + dy * dy > 25) continue;
+      const edge = 6 * GRID, far = 7 * GRID, R = 5 * GRID;
+      if (x < edge || y < edge || x > size - edge || y > size - edge) return false;
+      if (Math.hypot(x - me.x, y - me.y) < far) return false;
+      for (const a of avoid) if (Math.hypot(x - a.x, y - a.y) < far) return false;
+      for (let dy = -R; dy <= R; dy++) {
+        for (let dx = -R; dx <= R; dx++) {
+          if (dx * dx + dy * dy > R * R) continue;
           const cx = Math.floor(x) + dx, cy = Math.floor(y) + dy;
           if (!g.inside(cx, cy)) continue;
           const i = g.idx(cx, cy);
@@ -9112,7 +9161,7 @@ class Tutorial {
       }
       return true;
     };
-    for (let r = 0; r <= 30; r += 1.5) {
+    for (let r = 0; r <= 30 * GRID; r += 1.5 * GRID) {
       const steps = r ? 20 : 1;
       for (let k = 0; k < steps; k++) {
         const a = k * TAU / steps;
@@ -9122,8 +9171,8 @@ class Tutorial {
     }
     let best = null, bestCost = Infinity;
     for (let k = 0; k < 60; k++) {
-      const x = 6 + Math.random() * (size - 12), y = 6 + Math.random() * (size - 12);
-      const cost = w.spawnCost(x, y, 2.2) + (Math.hypot(x - me.x, y - me.y) < 7 ? 1e6 : 0);
+      const x = 6 * GRID + Math.random() * (size - 12 * GRID), y = 6 * GRID + Math.random() * (size - 12 * GRID);
+      const cost = w.spawnCost(x, y, 2.2 * GRID) + (Math.hypot(x - me.x, y - me.y) < 7 * GRID ? 1e6 : 0);
       if (cost < bestCost) {
         bestCost = cost;
         best = { x, y };
@@ -9136,12 +9185,12 @@ class Tutorial {
     const size = this.match.world.size, me = this.human;
     const dx = size / 2 - me.x, dy = size / 2 - me.y;
     const l = Math.hypot(dx, dy);
-    if (l < 4) return { x: 1, y: 0 };
+    if (l < 4 * GRID) return { x: 1, y: 0 };
     return { x: dx / l, y: dy / l };
   }
   addDummy(x, y, controller, speedMul) {
     const w = this.match.world;
-    const p = w.addPlayer({ name: t("tut.dummy"), look: resolveLook({ skin: "slate", hat: "none", trail: "classic" }), controller }, { x, y, radius: 2.2 });
+    const p = w.addPlayer({ name: t("tut.dummy"), look: resolveLook({ skin: "slate", hat: "none", trail: "classic" }), controller }, { x, y, radius: 2.2 * GRID });
     if (p) p.speed *= speedMul;
     return p;
   }
@@ -9151,22 +9200,23 @@ class Tutorial {
     h0.speedMul = 1e-4;
     const u = this.roomyDirection();
     const pv = { x: -u.y, y: u.x };
-    const a = this.freeSpot(h0.x + u.x * 11 - pv.x * 5, h0.y + u.y * 11 - pv.y * 5);
-    const b = this.freeSpot(a.x + pv.x * 11, a.y + pv.y * 11, [a]);
+    const a = this.freeSpot(h0.x + (u.x * 11 - pv.x * 5) * GRID, h0.y + (u.y * 11 - pv.y * 5) * GRID);
+    const b = this.freeSpot(a.x + pv.x * 11 * GRID, a.y + pv.y * 11 * GRID, [a]);
     this.demoA = this.addDummy(a.x, a.y, new ScriptedController([]), 0.75);
     const A2 = this.demoA;
     A2.look = resolveLook({ skin: "tangerine", hat: "none", trail: "classic" });
     const ux = Math.cos(Math.atan2(u.y, u.x)), uy = Math.sin(Math.atan2(u.y, u.x));
-    const clampPt = (x, y) => ({ x: Math.max(3, Math.min(this.match.world.size - 3, x)), y: Math.max(3, Math.min(this.match.world.size - 3, y)) });
+    const m = 3 * GRID, sz = this.match.world.size;
+    const clampPt = (x, y) => ({ x: Math.max(m, Math.min(sz - m, x)), y: Math.max(m, Math.min(sz - m, y)) });
     A2.controller.wps = [
-      clampPt(a.x + ux * 6, a.y + uy * 6),
-      clampPt(a.x + ux * 6 + pv.x * 5, a.y + uy * 6 + pv.y * 5),
-      clampPt(a.x + pv.x * 5 - ux * 1, a.y + pv.y * 5 - uy * 1),
+      clampPt(a.x + ux * 6 * GRID, a.y + uy * 6 * GRID),
+      clampPt(a.x + (ux * 6 + pv.x * 5) * GRID, a.y + (uy * 6 + pv.y * 5) * GRID),
+      clampPt(a.x + (pv.x * 5 - ux) * GRID, a.y + (pv.y * 5 - uy) * GRID),
       { x: a.x, y: a.y }
     ];
     this.demoB = this.addDummy(b.x, b.y, new ScriptedController([]), 0.95);
     this.demoB.look = resolveLook({ skin: "grape", hat: "none", trail: "classic" });
-    this.match.cameraTarget = { x: (a.x + b.x) / 2 + ux * 3, y: (a.y + b.y) / 2 + uy * 3 };
+    this.match.cameraTarget = { x: (a.x + b.x) / 2 + ux * 3 * GRID, y: (a.y + b.y) / 2 + uy * 3 * GRID };
     this.demoBWait = true;
   }
   setupPrey() {
@@ -9175,21 +9225,29 @@ class Tutorial {
     for (const d of [this.demoA, this.demoB]) if (d && w.players.includes(d)) w.removePlayer(d);
     this.demoA = this.demoB = null;
     const u = this.roomyDirection();
-    const s = this.freeSpot(h0.x + u.x * 10, h0.y + u.y * 10);
-    const ctrl = new ScriptedController([], { next: (world, p) => loopBeside(world, p, this.human, 7, 5) });
+    const s = this.freeSpot(h0.x + u.x * 10 * GRID, h0.y + u.y * 10 * GRID);
+    const ctrl = new ScriptedController([], { next: (world, p) => loopBeside(world, p, this.human) });
     this.prey = this.addDummy(s.x, s.y, ctrl, 0.55);
   }
   /** Called every simulation tick. */
   update(dt) {
     if (!this.active || !this.match) return;
     this.timer += dt;
+    if (this.step === 2 && this.timer > 14) {
+      this.step = 2.5;
+      this.human.frozen = false;
+      this.human.speedMul = 1;
+      this.match.cameraTarget = null;
+      this.goTo(3);
+      return;
+    }
     const p = this.human;
     if (this.step === 0 && p) {
       if (this.lastPos) this.moved += Math.hypot(p.x - this.lastPos.x, p.y - this.lastPos.y);
       this.lastPos = { x: p.x, y: p.y };
-      if (this.moved > 7 && this.timer > 1.2) this.goTo(1);
+      if (this.moved > 7 * GRID && this.timer > 1.2) this.goTo(1);
     }
-    if (this.step === 2 && this.demoA && this.demoB && this.demoBWait && this.demoA.trail.length >= 7) {
+    if (this.step === 2 && this.demoA && this.demoB && this.demoBWait && this.demoA.trail.length >= 7 * GRID) {
       this.demoBWait = false;
       const w = this.match.world.grid.w;
       const c = this.demoA.trail[Math.floor(this.demoA.trail.length / 2)];
@@ -9215,7 +9273,7 @@ class Tutorial {
       if (this.step === 2 && this.match.cameraTarget) c = r.worldToScreen(this.match.cameraTarget.x, this.match.cameraTarget.y);
       this.dim.style.setProperty("--x", `${c.x}px`);
       this.dim.style.setProperty("--y", `${c.y}px`);
-      this.dim.style.setProperty("--r", `${Math.max(140, r.camera.cellPx * (this.step === 2 ? 9 : 6))}px`);
+      this.dim.style.setProperty("--r", `${Math.max(140, r.camera.cellPx * GRID * (this.step === 2 ? 9 : 6))}px`);
     }
     if (this.step === 3 && this.prey && this.prey.alive) {
       const target = this.prey.trail.length ? (() => {
@@ -9249,38 +9307,57 @@ class Tutorial {
     app2.endMatch();
     app2.showMenu();
     await sleep(500);
+    if (!this.active) return;
+    const blocker = h("div.tut-block.interactive");
     const spotEl = h("div.spot");
-    this.layer.append(spotEl);
+    this.layer.append(blocker, spotEl);
     const steps = [
       { el: app2.menu.tileShop, text: t("tut.menu.shop"), ic: "cart" },
       { el: app2.menu.rankedCard, text: t("tut.menu.ranked"), ic: "trophy" },
       { el: app2.menu.tilePass, text: t("tut.menu.pass"), ic: "ticket" }
     ];
-    for (const s of steps) {
-      if (!this.active) return;
-      const r = s.el.getBoundingClientRect();
+    let current = null;
+    const place = () => {
+      if (!current) return;
+      const r = current.getBoundingClientRect();
       Object.assign(spotEl.style, { left: `${r.left - 6}px`, top: `${r.top - 6}px`, width: `${r.width + 12}px`, height: `${r.height + 12}px` });
+      return r;
+    };
+    this.onResize = () => place();
+    window.addEventListener("resize", this.onResize);
+    for (const step of steps) {
+      if (!this.active) return;
+      current = step.el;
+      const r = place();
       await new Promise((resolve) => {
-        this.coach({ title: "", text: s.text, ic: s.ic, bottom: r.top > window.innerHeight / 2 ? false : true, actions: [h("button.btn.small", { text: t("common.next"), on: { click: () => {
+        this.resolveStep = resolve;
+        this.coach({ title: "", text: step.text, ic: step.ic, bottom: r.top <= window.innerHeight / 2, actions: [h("button.btn.small", { text: t("common.next"), on: { click: () => {
           app2.sfx("click");
           resolve();
         } } })] });
         this.coachEl.querySelector("h4").remove();
       });
     }
+    current = null;
     spotEl.remove();
     if (!this.active) return;
+    const rewarded = app2.state.tutorialRewarded;
     await new Promise((resolve) => {
+      this.resolveStep = resolve;
+      const button = rewarded ? h("button.btn.green", { text: t("tut.menu.go"), on: { click: () => {
+        app2.sfx("click");
+        resolve();
+      } } }) : h("button.btn.gold", { html: `${coin()} +${ECONOMY.tutorialReward}`, on: { click: (e) => {
+        app2.sfx("buy");
+        app2.celebrateAt(e.currentTarget, true);
+        resolve();
+      } } });
       this.coach({
         title: "",
-        text: t("tut.menu.reward", { n: ECONOMY.tutorialReward }),
-        ic: "gift",
+        text: rewarded ? t("tut.menu.done") : t("tut.menu.reward", { n: ECONOMY.tutorialReward }),
+        ic: rewarded ? "flag" : "gift",
         celebrate: true,
-        actions: [h("button.btn.gold", { html: `${coin()} +${ECONOMY.tutorialReward}`, on: { click: (e) => {
-          app2.sfx("buy");
-          app2.celebrateAt(e.currentTarget, true);
-          resolve();
-        } } })]
+        actions: [button]
       });
       this.coachEl.querySelector("h4").remove();
     });
@@ -9288,8 +9365,15 @@ class Tutorial {
   }
   cleanupLayer() {
     clearTimeout(this.pending);
+    if (this.onResize) {
+      window.removeEventListener("resize", this.onResize);
+      this.onResize = null;
+    }
     this.layer.replaceChildren();
     this.coachEl = null;
+    const r = this.resolveStep;
+    this.resolveStep = null;
+    r == null ? void 0 : r();
   }
   skip() {
     if (!this.active) return;
@@ -9391,6 +9475,20 @@ class App {
     setTimeout(() => this.loadingEl.remove(), 500);
     if (this.saveMgr.corrupted) this.toast(t("toast.saved"));
     this.showMenu();
+    this.checkAbandonedRanked();
+  }
+  /** A ranked match that was running when the page closed counts as leaving it. */
+  checkAbandonedRanked() {
+    const s = this.state;
+    if (!s.rankedActive) return;
+    s.rankedActive = false;
+    const change = applyRP(s.rank, -100);
+    this.persist(true);
+    this.menu.refresh();
+    setTimeout(() => {
+      this.toast(`${icon("trophy")}${t("rank.abandoned", { n: GAME.rankedQuitPenalty })}`, "bad");
+      if (change.demoted) rankChangeDialog(this, change);
+    }, 900);
   }
   buildLoading() {
     this.loadBar = h("i");
@@ -9657,6 +9755,10 @@ class App {
       best: s.stats.bestShare
     });
     this.match = m;
+    if (mode === "ranked") {
+      s.rankedActive = true;
+      this.persist(true);
+    }
     this.hideBanners();
     m.on("happy", () => this.gameplay.happytime());
     this.paused = false;
@@ -9691,7 +9793,10 @@ class App {
   }
   togglePause() {
     var _a;
-    if (!this.match) return;
+    if (!this.match) {
+      if (!this.modals.open && (this.shop.isOpen || this.pass.isOpen)) this.closePages();
+      return;
+    }
     if (this.paused) {
       (_a = this.modals.current) == null ? void 0 : _a.close("resume");
       return;
@@ -9744,7 +9849,8 @@ class App {
     m.state = "over";
     m.place = m.world.placeOf(m.human);
     m.result = m.buildResult(false);
-    m.result.cause = null;
+    m.result.cause = m.ranked ? "quit" : null;
+    m.result.quit = true;
     this.onMatchOver(m.result);
   }
   async offerRevive(info) {
@@ -9771,6 +9877,7 @@ class App {
   /** Credit coins, XP, rank points, quests and stats; returns data for the results screen. */
   processMatch(result) {
     const s = this.state;
+    s.rankedActive = false;
     const coins = computeMatchCoins({ share: result.share, kills: result.kills, seconds: result.seconds, won: result.won, ranked: result.ranked, magnet: result.magnet, bonus: result.bonus });
     addCoins(s, coins.total);
     const xp = matchXP(result);
@@ -9792,7 +9899,7 @@ class App {
     let rp = null, rankBefore = null, rankAfter = null;
     if (result.ranked) {
       rankBefore = { tier: s.rank.tier, rp: s.rank.rp, need: RANKS[s.rank.tier].need };
-      const delta = computeRP({ ...result, tier: s.rank.tier });
+      const delta = result.quit ? -100 : computeRP({ ...result, tier: s.rank.tier });
       rp = applyRP(s.rank, delta);
       rankAfter = { tier: s.rank.tier, rp: s.rank.rp };
     }
@@ -9807,9 +9914,9 @@ class App {
     this.gameplay.stop();
     this.ads.matchFinished();
     if (m.mode === "tutorial") return;
+    const data = this.processMatch(result);
     await sleep(900);
     if (this.match !== m) return;
-    const data = this.processMatch(result);
     if (data.newBest || result.won) this.gameplay.happytime();
     this.audio.playMusic("menu");
     const choicePromise = resultsDialog(this, data);
